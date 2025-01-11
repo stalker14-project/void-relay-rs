@@ -1,2 +1,2 @@
 # void-relay-rs
-SS14 manager bot
+Why Rust? Because I want.
