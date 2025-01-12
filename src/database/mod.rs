@@ -1,4 +1,3 @@
-use chrono::{DateTime, Local};
 use sqlx::{Executor, PgPool};
 use uuid::Uuid;
 use sqlx::Row;
@@ -85,12 +84,6 @@ pub struct AdminNote {
     pub player_user_id: Uuid,
     pub message: String,
     pub created_by_id: Uuid,
-    pub created_at: DateTime<Local>,
     pub last_edited_by_id: Uuid,
-    pub last_edited_at: DateTime<Local>,
     pub deleted: bool,
-    pub deleted_by_id: Option<Uuid>,
-    pub deleted_at: Option<DateTime<Local>>,
-    pub expiration_time: Option<DateTime<Local>>,
-    pub severity: i32,
 }
