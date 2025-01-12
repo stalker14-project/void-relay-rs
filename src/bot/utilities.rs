@@ -4,10 +4,16 @@ use uuid::Uuid;
 use crate::{database::PgDatabase, error::Error};
 
 #[derive(Debug, Deserialize)]
-pub struct AuthServerResponse { userId: String }
+pub struct AuthServerResponse { 
+    #[serde(rename = "userId")] 
+    user_id: String 
+}
 
 #[derive(Debug, Deserialize)]
-pub struct AuthErrorResponse { status: usize }
+pub struct AuthErrorResponse { 
+    #[allow(dead_code)]
+    status: usize  // needed as flag, that we got into error response
+}
 
 static AUTH_SERVER: &str = "https://auth.spacestation14.com";
 
@@ -16,15 +22,15 @@ pub async fn lookup_user_id_by_login(login: &str) -> Result<Uuid, Error> {
     let bdata = response.bytes().await?.into_iter().collect::<Vec<_>>();
 
     if let Ok(response) = serde_json::from_slice::<AuthServerResponse>(&bdata) {
-        let uuid = Uuid::parse_str(&response.userId)?;
+        let uuid = Uuid::parse_str(&response.user_id)?;
         return Ok(uuid)
     }
 
-    if let Ok(_) = serde_json::from_slice::<AuthErrorResponse>(&bdata) {
+    if serde_json::from_slice::<AuthErrorResponse>(&bdata).is_ok() {
         return Err(Error::AuthNotFound)
     }
 
-    return Err(Error::AuthNotFound)
+    Err(Error::AuthNotFound)
 }
 
 // helper method to avoid error checks bloating

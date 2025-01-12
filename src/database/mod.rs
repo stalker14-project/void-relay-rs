@@ -23,7 +23,7 @@ impl PgDatabase {
         let query = query.bind(login);
 
         let row = self.inner_pool.fetch_optional(query).await?;
-        if let None = row {
+        if row.is_none() {
             return Ok(None)
         }
         let row = row.unwrap();
@@ -54,7 +54,7 @@ impl PgDatabase {
         let query = query.bind(uuid);
 
         let row = self.inner_pool.fetch_optional(query).await?;
-        if let None = row {
+        if row.is_none() {
             return Ok(None);
         }
 

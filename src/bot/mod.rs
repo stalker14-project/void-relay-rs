@@ -71,7 +71,7 @@ impl DiscordBot {
 
     async fn handle_command_interaction(&self, ctx: Context, command: CommandInteraction) {
         let command_type = DiscordCommandType::from_str(&command.data.name);
-        if let Err(_) = command_type {
+        if command_type.is_err() {
             error!("Invalid interaction type provided: {}", command.data.name);
             create_response("Invalid interaction type!", ctx, command).await;
             return;
