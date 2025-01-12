@@ -1,1 +1,4 @@
 /target
+
+# ignore dev configuration
+appsettings.dev.json
