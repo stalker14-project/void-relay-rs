@@ -8,6 +8,9 @@ pub struct Config {
     ss14_database: String,
     api_host: String,
     guild_id: String,
+    ss14_server_token: String,
+    ss14_api_url: String,
+    authorization_url: String,
 }
 
 impl Config {
@@ -25,6 +28,18 @@ impl Config {
 
     pub fn guild(&self) -> &str {
         &self.guild_id
+    }
+
+    pub fn auth_url(&self) -> &str {
+        &self.authorization_url
+    }
+
+    pub fn server_token(&self) -> &str {
+        &self.ss14_server_token
+    }
+
+    pub fn api_url(&self) -> &str {
+        &self.ss14_api_url
     }
 }
 

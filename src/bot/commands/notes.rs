@@ -1,83 +1,191 @@
-use serenity::all::{CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage, ResolvedOption, ResolvedValue};
+use log::{error, warn};
+use serenity::all::{
+    CommandOptionType, CreateCommand, CreateCommandOption, CreateEmbed,
+    CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage,
+    ResolvedOption, ResolvedValue,
+};
 
-use crate::{bot::{create_response_with_content, utilities::get_user_id_by_login}, database::PgDatabase};
+use crate::{
+    bot::{
+        create_response_with_content,
+        utilities::{generate_random_colour, get_user_id_by_login, resolve_user_name},
+    },
+    database::{AdminNote, AdminNoteShort, PgDatabase},
+};
+
+static SHORT_MSG_LEN_SYMBOLS: usize = 50;
 
 pub fn get_registration() -> CreateCommand {
     CreateCommand::new("notes")
-        .description("Get user notes in game")
-        .add_option(CreateCommandOption::new(
-            serenity::all::CommandOptionType::String, 
-            "login", 
-            "In-game login of the player"
+        .description("User notes in game")
+        .add_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "list", "Lists all notes of this user")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::String, "login", "In-game login")
+                        .required(true),
+                ),
         )
-        .required(true)
-    )
+        .add_option(
+            CreateCommandOption::new(CommandOptionType::SubCommand, "note", "Gets a specific note by ID")
+                .add_sub_option(
+                    CreateCommandOption::new(CommandOptionType::Integer, "id", "ID of the note from the 'list' subcommand")
+                        .required(true),
+                ),
+        )
 }
 
-pub fn get_options(options: &Vec<ResolvedOption>) -> Result<String, String> {
+pub fn get_options(options: &[ResolvedOption]) -> Result<NotesSubcommand, String> {
     if options.len() != 1 {
         return Err("Invalid options count".to_string());
     }
 
-    let login = options.first();
-    if let Some(login) = login {
-        if let ResolvedValue::String(login) = login.value {
-            return Ok(login.to_string());
-        }
-    }
+    let subcommand = options.first().unwrap();
 
-    Err("Unable to retrieve login option".to_string())
+    match subcommand.name {
+        "list" => parse_list_subcommand(subcommand),
+        "note" => parse_note_subcommand(subcommand),
+        _ => Err("Invalid subcommand type".to_string()),
+    }
 }
 
-pub async fn execute(login: String, database: &PgDatabase) -> CreateInteractionResponse {
-    let user_id = match get_user_id_by_login(&login, database).await {
-        Some(user_id) => user_id,
-        None => return create_response_with_content(&format!("User {} is not found", login))
-    };
-
-    let notes = database.get_notes(user_id).await.unwrap();
-
-    let mut message = CreateInteractionResponseMessage::new();
-    let mut embed = CreateEmbed::new().title(format!("Notes for `{}`", login));
-    let mut grouped_notes = String::new();
-    let mut count = 0;
-
-    for (idx, note) in notes.iter().enumerate() {
-        if idx == 50 {
-            break;
-        }
-
-        let created_by_id = match database.get_login_by_uuid(note.created_by_id).await {
-            Ok(Some(uuid)) => uuid,
-            _ => return create_response_with_content("Unable to find `created by` user") 
-        };
-
-        let last_edited_by = match database.get_login_by_uuid(note.last_edited_by_id).await {
-            Ok(Some(uuid)) => uuid,
-            _ => return create_response_with_content("Unable to find `last edited by` user") 
-        };
-        
-        let note_entry = format!(
-            "**📋 Round ID**: {}\n**👤 Created By**: {}\n**✏️ Last Edited By**: {}\n**🗑️ Deleted**: {}\n💬 **Message**: {}\n\n",
-            note.round_id, created_by_id, last_edited_by, note.deleted, note.message
-        );
-
-        grouped_notes.push_str(&note_entry);
-        count += 1;
-
-        if count == 2 || idx == notes.len() - 1 {
-            embed = embed.field(
-                " ",
-                grouped_notes.trim(),
-                false,
-            );
-            grouped_notes.clear();
-            count = 0;
+fn parse_note_subcommand(opt: &ResolvedOption) -> Result<NotesSubcommand, String> {
+    if let ResolvedValue::SubCommand(suboptions) = &opt.value {
+        if let Some(ResolvedOption {
+            value: ResolvedValue::Integer(id), ..
+        }) = suboptions.first()
+        {
+            return Ok(NotesSubcommand::Note { id: *id });
         }
     }
+    Err("Invalid or missing 'id' option".to_string())
+}
 
-    embed = embed.footer(CreateEmbedFooter::new("Only the first 50 notes are listed, grouped by 2."));
+fn parse_list_subcommand(opt: &ResolvedOption) -> Result<NotesSubcommand, String> {
+    if let ResolvedValue::SubCommand(suboptions) = &opt.value {
+        if let Some(ResolvedOption {
+            value: ResolvedValue::String(login), ..
+        }) = suboptions.first()
+        {
+            return Ok(NotesSubcommand::List { login: login.to_string() });
+        }
+    }
+    Err("Invalid or missing 'login' option".to_string())
+}
 
-    message = message.embed(embed);
-    CreateInteractionResponse::Message(message)
+pub async fn execute(command: NotesSubcommand, db: &PgDatabase) -> CreateInteractionResponse {
+    match command {
+        NotesSubcommand::Note { id } => execute_note_by_id(id as i32, db).await,
+        NotesSubcommand::List { login } => execute_list_by_login(login, db).await,
+    }
+}
+
+async fn execute_list_by_login(login: String, db: &PgDatabase) -> CreateInteractionResponse {
+    let uuid = match get_user_id_by_login(&login, db).await {
+        Some(id) => id,
+        None => return create_response_with_content("No such player found."),
+    };
+
+    match db.get_notes_list(uuid).await {
+        Ok(notes) => {
+            let description = notes
+                .iter()
+                .map(|note| format_short_note_summary(note))
+                .collect::<Vec<String>>()
+                .join("\n");
+
+            let embed = CreateEmbed::new()
+                .title(format!("Notes for `{}`", login))
+                .description(description)
+                .color(generate_random_colour())
+                .footer(CreateEmbedFooter::new("VoidRelay by JerryImMouse"));
+
+            CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().add_embed(embed).ephemeral(true))
+        }
+        Err(err) => {
+            error!("Error retrieving notes for {}: {}", login, err);
+            create_response_with_content("Failed to retrieve notes.")
+        }
+    }
+}
+
+async fn execute_note_by_id(id: i32, db: &PgDatabase) -> CreateInteractionResponse {
+    match db.get_note_by_id(id).await {
+        Ok(Some(note)) => {
+            let created_by = resolve_user_name(db, &note.created_by_id).await;
+            let last_edited_by = resolve_user_name(db, &note.last_edited_by_id).await;
+            let player_user = resolve_user_name(db, &note.player_user_id).await;
+
+            let formatted_note = format_admin_note(&note, &created_by, &last_edited_by);
+
+            let embed = CreateEmbed::new()
+                .title(format!("Note `{}` for `{}`", id, player_user))
+                .description(formatted_note)
+                .color(generate_random_colour())
+                .footer(CreateEmbedFooter::new("VoidRelay by JerryImMouse"));
+
+            CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().add_embed(embed).ephemeral(true))
+        }
+        Ok(None) => create_response_with_content(&format!("Note with ID `{}` not found.", id)),
+        Err(err) => {
+            error!("Error fetching note with ID {}: {}", id, err);
+            create_response_with_content("Error occurred while fetching the note.")
+        }
+    }
+}
+
+fn format_short_note_summary(note: &AdminNoteShort) -> String {
+    let short_msg = if note.message.chars().count() <= SHORT_MSG_LEN_SYMBOLS {
+        note.message.clone()
+    } else {
+        let end_index = note
+            .message
+            .char_indices()
+            .nth(SHORT_MSG_LEN_SYMBOLS)
+            .map(|(idx, _)| idx)
+            .unwrap_or_else(|| note.message.len());
+        format!("{}...", &note.message[..end_index])
+    };
+
+    format!("**{}**. {}", note.admin_notes_id, short_msg)
+}
+
+fn format_admin_note(note: &AdminNote, created_by: &str, last_edited_by: &str) -> String {
+    let mut formatted = format!(
+        r#"✨ **Round ID:** {}
+👤 **Created By:** {}
+📅 **Created At:** {}
+✍️ **Last Edited By:** {}
+🕒 **Last Edited At:** {}
+🗑️ **Deleted:** {}
+"#,
+        note.round_id,
+        created_by,
+        note.created_at.to_string(),
+        last_edited_by,
+        note.last_edited_at.to_string(),
+        if note.deleted { "Yes" } else { "No" },
+    );
+
+    if let Some(deleted_at) = note.deleted_at {
+        formatted.push_str(&format!("🗓️ **Deleted At:** {}\n", deleted_at.to_string()));
+    }
+
+    formatted.push_str(&format!(
+        "{}",
+        if note.secret { "🔒 **Secret:** Yes\n" } else { "🔓 **Secret:** No\n" }
+    ));
+
+    if let Some(expiration_time) = note.expiration_time {
+        formatted.push_str(&format!("⏳ **Expiration Time:** {}\n", expiration_time.to_string()));
+    }
+
+    formatted.push_str(&format!("\n📝 **Message:**\n{}", note.message));
+
+    formatted
+}
+
+#[derive(Debug)]
+pub enum NotesSubcommand {
+    List { login: String },
+    Note { id: i64 },
 }

@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use commands::{notes, whitelistadd, whitelistrm, DiscordCommandType};
+use commands::{ban, notes, whitelist, DiscordCommandType};
 use log::{
     debug,
     info,
@@ -31,9 +31,9 @@ impl EventHandler for DiscordBot {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("Bot {} connected and ready to handle interactions!", ready.user.name);
         let result = Self::register_commands(&ctx.http, self.config.guild(), vec![
-            whitelistadd::get_registration(),
-            whitelistrm::get_registration(),
-            notes::get_registration()
+            whitelist::get_registration(),
+            notes::get_registration(),
+            ban::get_registration()
         ]).await;
 
         if let Err(e) = result {
@@ -79,17 +79,10 @@ impl DiscordBot {
 
         let command_type = command_type.unwrap();
         let response = match command_type {
-            DiscordCommandType::WhitelistAdd => {
-                let result = whitelistadd::get_options(&command.data.options());
+            DiscordCommandType::Whitelist => {
+                let result = whitelist::get_options(&command.data.options());
                 match result {
-                    Ok(options) => whitelistadd::execute(options, &self.db).await,
-                    Err(e) => create_response_with_content(&e)
-                }
-            },
-            DiscordCommandType::WhitelistRm => {
-                let result = whitelistrm::get_options(&command.data.options());
-                match result {
-                    Ok(options) => whitelistrm::execute(options, &self.db).await,
+                    Ok(options) => whitelist::execute(options, &self.db).await,
                     Err(e) => create_response_with_content(&e)
                 }
             },
@@ -97,6 +90,13 @@ impl DiscordBot {
                 let result = notes::get_options(&command.data.options());
                 match result {
                     Ok(options) => notes::execute(options, &self.db).await,
+                    Err(e) => create_response_with_content(&e)
+                }
+            },
+            DiscordCommandType::Ban => {
+                let result = ban::get_options(&command.data.options());
+                match result {
+                    Ok(options) => ban::execute(options, &self.db).await,
                     Err(e) => create_response_with_content(&e)
                 }
             }

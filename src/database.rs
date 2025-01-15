@@ -1,10 +1,9 @@
+use chrono::{DateTime, Utc};
 use sqlx::{Executor, PgPool};
 use uuid::Uuid;
 use sqlx::Row;
 
 use crate::error::Error;
-
-pub mod utilities;
 
 pub struct PgDatabase {
     inner_pool: PgPool
@@ -63,12 +62,40 @@ impl PgDatabase {
         Ok(Some(login))
     }
 
-    pub async fn get_notes(&self, uuid: Uuid) -> Result<Vec<AdminNote>, Error> {
-        let notes = sqlx::query_as::<_, AdminNote>("SELECT * FROM admin_notes WHERE player_user_id = $1")
+    pub async fn get_notes_list(&self, uuid: Uuid) -> Result<Vec<AdminNoteShort>, Error> {
+        let notes = sqlx::query_as::<_, AdminNoteShort>("SELECT admin_notes_id, message FROM admin_notes WHERE player_user_id = $1")
             .bind(uuid)
             .fetch_all(&self.inner_pool).await?;
         
         Ok(notes)
+    }
+
+    pub async fn get_bans_list(&self, uuid: Uuid) -> Result<Vec<ServerBanShort>, Error> {
+        let bans = sqlx::query_as::<_, ServerBanShort>(
+            "SELECT server_ban_id, reason FROM server_ban WHERE player_user_id = $1"
+        ).bind(uuid)
+        .fetch_all(&self.inner_pool).await?;
+
+
+        Ok(bans)
+    }
+
+    pub async fn get_ban_by_id(&self, ban_id: i32) -> Result<Option<ServerBan>, Error> {
+        let ban = sqlx::query_as::<_, ServerBan>(
+            "SELECT * FROM server_ban WHERE server_ban_id = $1"
+        ).bind(ban_id)
+        .fetch_optional(&self.inner_pool).await?;
+
+        Ok(ban)
+    }
+
+    pub async fn get_note_by_id(&self, note_id: i32) -> Result<Option<AdminNote>, Error> {
+        let note = sqlx::query_as::<_, AdminNote>(
+            "SELECT * FROM admin_notes WHERE admin_notes_id = $1"
+        ).bind(note_id)
+        .fetch_optional(&self.inner_pool).await?;
+
+        Ok(note)
     }
 
     pub async fn close(&self) {
@@ -79,11 +106,46 @@ impl PgDatabase {
 // data structs
 
 #[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AdminNoteShort {
+    pub admin_notes_id: i32,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AdminNote {
     pub round_id: i32,
     pub player_user_id: Uuid,
     pub message: String,
     pub created_by_id: Uuid,
+    pub created_at: DateTime<Utc>,
     pub last_edited_by_id: Uuid,
+    pub last_edited_at: DateTime<Utc>,
     pub deleted: bool,
+    pub deleted_by_id: Option<Uuid>,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub secret: bool,
+    pub expiration_time: Option<DateTime<Utc>>,
+    pub severity: i32
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ServerBanShort {
+    pub server_ban_id: i32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ServerBan {
+    pub server_ban_id: i32,
+    pub player_user_id: Uuid,
+    pub address: std::net::IpAddr,
+    pub ban_time: DateTime<Utc>,
+    pub expiration_time: Option<DateTime<Utc>>,
+    pub reason: String,
+    pub banning_admin: Uuid,
+    pub hwid: Vec<u8>,
+    pub auto_delete: bool,
+    pub last_edited_at: Option<DateTime<Utc>>,
+    pub last_edited_by_id: Option<Uuid>,
+    pub round_id: Option<i32>,
 }

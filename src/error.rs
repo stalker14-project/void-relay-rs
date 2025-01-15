@@ -14,6 +14,12 @@ pub enum Error {
     ReqwestErr(#[from] reqwest::Error),
     #[error("UUID Parse Error: {0}")]
     UuidErr(#[from] uuid::Error),
-    #[error("SS14 Auth Server not found error.")]
-    AuthNotFound
+    #[error("HTTP Api Error: {0}")]
+    HTTPApiError(String)
+}
+
+impl Error {
+    pub fn api_err(s: &str) -> Self {
+        Self::HTTPApiError(s.to_string())
+    }
 }

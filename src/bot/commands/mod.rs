@@ -1,13 +1,13 @@
-pub mod whitelistadd;
-pub mod whitelistrm;
+pub mod whitelist;
 pub mod notes;
+pub mod ban;
 
 use std::str::FromStr;
 
 pub enum DiscordCommandType {
-    WhitelistAdd,
-    WhitelistRm,
+    Whitelist,
     Notes,
+    Ban
     // todo
 }
 
@@ -16,9 +16,9 @@ impl FromStr for DiscordCommandType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "whitelistadd" => Ok(Self::WhitelistAdd),
+            "whitelist" => Ok(Self::Whitelist),
             "notes" => Ok(Self::Notes),
-            "whitelistrm" => Ok(Self::WhitelistRm),
+            "bans" => Ok(Self::Ban),
             _ => Err(())
         }
     }
