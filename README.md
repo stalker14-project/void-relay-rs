@@ -12,7 +12,7 @@ Erghh.. currently there are no such cool roadmap, but I'm planning to implement:
 
 - [X] Whitelist Managing Ability 
 - [X] Notes Managing Ability
-- [+-] Ban Ability
+- [ ] Ban Ability
 - [ ] Ping/Call/Summon Player(By its in-game login) in Discord.  
 - [ ] Reverse operation to operation above(in-game login by discord).
 - [ ] Authorization state, current account that is linked and other stuff I can safely display to end user.   
