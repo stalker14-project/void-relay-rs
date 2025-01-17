@@ -1,170 +1,208 @@
-use log::error;
+use std::str::FromStr;
 
-use serenity::all::{
-    CommandOptionType, CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter, 
-    CreateInteractionResponse, CreateInteractionResponseMessage, ResolvedOption, ResolvedValue
-};
+use log::{error, warn};
+use serenity::all::{CommandInteraction, CommandOptionType, CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage, ResolvedOption, ResolvedValue, UserId};
 
-use uuid::Uuid;
-
-use crate::{
-    bot::{
-        create_response_with_content, 
-        utilities::{
-            generate_random_colour, get_user_id_by_login, resolve_user_name
-        }
-    }, 
-        database::{
-            PgDatabase, ServerBan, ServerBanShort
-        }
-};
+use crate::{api::utilities::{BanCommand, DiscordAuthClient, PardonCommand, SS14Actor, SS14ApiClient}, bot::{create_response_with_content, utilities::{generate_random_colour, get_user_id_by_login, resolve_user_name}}, config::Config, database::{PgDatabase, ServerBan, ServerBanShort}};
 
 static SHORT_MSG_LEN_SYMBOLS: usize = 50;
 
 pub fn get_registration() -> CreateCommand {
     CreateCommand::new("bans")
-        .description("User notes in game")
+        .description("Manages bans at SS14 server")
         .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "list", "Lists all bans of this user")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::String, "login", "In-game login")
-                        .required(true),
-                ),
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "Lists all bans for specified player",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "login",
+                    "In-Game login",
+                )
+                .required(true),
+            ),
         )
         .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "pardon", "Pardons specified ban ID")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "id", "ID of the ban from the 'list' subcommand")
-                        .required(true),
-                ),
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "info",
+                "Info about specific ban by ID",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "id",
+                    "Ban ID",
+                )
+                .required(true),
+            ),
         )
         .add_option(
-            CreateCommandOption::new(CommandOptionType::SubCommand, "info", "Lists info about this ban")
-                .add_sub_option(
-                    CreateCommandOption::new(CommandOptionType::Integer, "id", "ID of the ban from the `list` subcommand")
-                        .required(true)
-                ),
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "pardon",
+                "Pardon specific ban",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "id",
+                    "Ban ID",
+                )
+                .required(true),
+            ),
+        )
+        .add_option(
+            CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "ban",
+                "Bans specific player",
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "login",
+                    "In-Game Login",
+                )
+                .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "minutes",
+                    "Minutes to ban player for",
+                )
+                .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "reason",
+                    "Reason to ban for",
+                )
+                .required(true),
+            )
+            .add_sub_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Integer,
+                    "severity",
+                    "Severity to ban for",
+                )
+                .required(true),
+            ),
         )
 }
 
-fn parse_list_options(opt: &ResolvedOption) -> Result<BanSubcommand, String> {
+fn parse_info_options(opt: &ResolvedOption) -> Result<BansSubcommand, String> {
+    if let ResolvedValue::SubCommand(suboptions) = &opt.value {
+        if let Some(ResolvedOption {
+            value: ResolvedValue::Integer(id), ..
+        }) = suboptions.first()
+        {
+            return Ok(BansSubcommand::Info(*id as i32));
+        }
+    }
+    Err("Invalid or missing 'id' option".to_string())
+}
+
+fn parse_list_options(opt: &ResolvedOption) -> Result<BansSubcommand, String> {
     if let ResolvedValue::SubCommand(suboptions) = &opt.value {
         if let Some(ResolvedOption {
             value: ResolvedValue::String(login), ..
         }) = suboptions.first()
         {
-            return Ok(BanSubcommand::List { login: login.to_string() });
+            return Ok(BansSubcommand::List(login.to_string()));
         }
     }
     Err("Invalid or missing 'login' option".to_string())
 }
 
-fn parse_pardon_options(opt: &ResolvedOption) -> Result<BanSubcommand, String> {
+fn parse_pardon_options(opt: &ResolvedOption, cmd: &CommandInteraction) -> Result<BansSubcommand, String> {
     if let ResolvedValue::SubCommand(suboptions) = &opt.value {
+        let caller = cmd.user.id.to_owned();
         if let Some(ResolvedOption {
             value: ResolvedValue::Integer(id), ..
         }) = suboptions.first()
         {
-            return Ok(BanSubcommand::Pardon { id: *id as i32 });
+            return Ok(BansSubcommand::Pardon {id: *id, caller_discord_id: caller});
         }
     }
     Err("Invalid or missing 'id' option".to_string())
 }
 
-fn parse_info_options(opt: &ResolvedOption) -> Result<BanSubcommand, String> {
-    if let ResolvedValue::SubCommand(suboptions) = &opt.value {
-        if let Some(ResolvedOption {
-            value: ResolvedValue::Integer(id), ..
-        }) = suboptions.first()
-        {
-            return Ok(BanSubcommand::Info { id: *id as i32 });
-        }
-    }
-    Err("Invalid or missing 'id' option".to_string())
-}
+fn parse_ban_options(opt: &ResolvedOption, cmd: &CommandInteraction) -> Result<BansSubcommand, String> {
+    let caller_discord_id = cmd.user.id.clone();
 
-fn parse_ban_options(opt: &ResolvedOption) -> Result<BanSubcommand, String> {
     if let ResolvedValue::SubCommand(suboptions) = &opt.value {
-        let mut admin_user_id = None;
-        let mut player_user_id = None;
-        let mut reason = None;
-        let mut severity = None;
-        let mut minutes = None;
-
-        // Parse suboptions
-        for suboption in suboptions {
-            match (&suboption.name[..], &suboption.value) {
-                ("admin_user_id", ResolvedValue::String(value)) => {
-                    admin_user_id = Some(value.parse::<Uuid>().map_err(|_| "Invalid UUID for admin_user_id".to_string())?)
-                }
-                ("player_user_id", ResolvedValue::String(value)) => {
-                    player_user_id = Some(value.parse::<Uuid>().map_err(|_| "Invalid UUID for player_user_id".to_string())?)
-                }
-                ("reason", ResolvedValue::String(value)) => reason = Some(value.to_string()),
-                ("severity", ResolvedValue::Integer(value)) => {
-                    severity = Some(*value as u8)
-                }
-                ("minutes", ResolvedValue::Integer(value)) => {
-                    minutes = Some(*value as u64)
-                }
-                _ => return Err(format!("Unknown option: {}", suboption.name)),
+        let mut banning_player_login: Option<String> = None;
+        let mut minutes: Option<i64> = None;
+        let mut reason: Option<String> = None;
+        let mut severity: Option<u16> = None;
+        
+        for option in suboptions {
+            match (option.name, &option.value) {
+                ("login", ResolvedValue::String(login)) => banning_player_login = Some(login.to_string()),
+                ("minutes", ResolvedValue::Integer(min)) => minutes = Some(*min),
+                ("reason", ResolvedValue::String(r)) => reason = Some(r.to_string()),
+                ("severity", ResolvedValue::Integer(s)) => severity = Some(*s as u16),
+                _ => return Err("Invalid options passed".to_string())
             }
         }
 
-        if admin_user_id.is_none()  || 
-           player_user_id.is_none() ||
-           severity.is_none()       ||
-           minutes.is_none() {
-           
-           return Err("Some of the options is not supplied".to_string())
+        if banning_player_login.is_none() {
+            return Err("Banning player couldn't be none".to_string())
         }
 
-        let reason = reason.unwrap_or_else(|| "No reason supplied".to_string());
+        let banning_player_login = banning_player_login.unwrap();
+        let minutes = minutes.unwrap_or_else(|| 0);
+        let reason = reason.unwrap_or_else(|| "No reason provided".to_string());
+        let severity = severity.unwrap_or_else(|| 2);
 
-        return Ok(BanSubcommand::Ban { 
-            admin_user_id: admin_user_id.unwrap(),
-            player_user_id: player_user_id.unwrap(),
-            reason: reason.to_string(),
-            severity: severity.unwrap(),
-            minutes: minutes.unwrap()
+        return Ok(BansSubcommand::Ban { 
+            caller_discord_id,
+            banning_player_login, 
+            minutes, 
+            reason, 
+            severity 
         })
     }
 
-    Err("Invalid type of the subcommand".to_string())
+    todo!()
 }
 
-pub fn get_options(options: &[ResolvedOption]) -> Result<BanSubcommand, String> {
-    if options.len() != 1 {
-        return Err("Invalid options count".to_string());
+pub fn get_options(_options: &[ResolvedOption], cmd: &CommandInteraction) -> Result<BansSubcommand, String> {
+    if _options.len() != 1 {
+        return Err("Invalid options length".to_string());
     }
 
-    let subcommand = options.first().unwrap();
-
+    let subcommand = _options.first().unwrap();
     match subcommand.name {
-        "list" => return parse_list_options(subcommand),
-        "pardon" => return parse_pardon_options(subcommand),
-        "ban" => return parse_ban_options(subcommand),
-        "info" => return parse_info_options(subcommand),
-        _ => return Err("invalid subcommand".to_string())
+        "list" => parse_list_options(subcommand),
+        "info" => parse_info_options(subcommand),
+        "pardon" => parse_pardon_options(subcommand, cmd),
+        "ban" => parse_ban_options(subcommand, cmd),
+        _ => return Err("Invalid subcommand".to_string())
     }
 }
 
-pub async fn execute(cmd: BanSubcommand, database: &PgDatabase) -> CreateInteractionResponse {
+pub async fn execute(cmd: BansSubcommand, db: &PgDatabase, config: &Config) -> CreateInteractionResponse {
     match cmd {
-        BanSubcommand::Ban { 
-            admin_user_id, 
-            player_user_id, 
-            reason, 
-            severity, 
-            minutes 
-        } => execute_ban_cmd(admin_user_id, player_user_id, reason, severity, minutes).await,
-        BanSubcommand::Pardon { id } => execute_pardon_cmd(id).await,
-        BanSubcommand::List { login } => execute_list_cmd(&login, database).await,
-        BanSubcommand::Info { id } => execute_info_cmd(id, database).await,
+        BansSubcommand::Ban { .. } => execute_ban_cmd(cmd).await,
+        BansSubcommand::List(_) => execute_list_cmd(cmd, db).await,
+        BansSubcommand::Pardon { .. } => execute_pardon_cmd(cmd, db, config).await,
+        BansSubcommand::Info(_) => execute_info_cmd(cmd, db).await,
     }
 }
 
-async fn execute_list_cmd(login: &str, db: &PgDatabase) -> CreateInteractionResponse {
+async fn execute_list_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInteractionResponse {
+    let login = match cmd {
+        BansSubcommand::List(login) => login,
+        _ => panic!("Invalid subcommand passed.")
+    };
+
     let uuid = match get_user_id_by_login(&login, db).await {
         Some(id) => id,
         None => return create_response_with_content("No such player found."),
@@ -193,16 +231,12 @@ async fn execute_list_cmd(login: &str, db: &PgDatabase) -> CreateInteractionResp
     }
 }
 
-// them both are waiting for me to implement admin API
-async fn execute_pardon_cmd(id: i32) -> CreateInteractionResponse {
-    todo!()
-}
+async fn execute_info_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInteractionResponse {
+    let id = match cmd {
+        BansSubcommand::Info(id) => id,
+        _ => panic!("Invalid subcommand passed.")
+    };
 
-async fn execute_ban_cmd(admin_user_id: Uuid, player_user_id: Uuid, reason: String, severity: u8, minutes: u64) -> CreateInteractionResponse {
-    todo!()
-}
-
-async fn execute_info_cmd(id: i32, db: &PgDatabase) -> CreateInteractionResponse {
     match db.get_ban_by_id(id).await {
         Ok(Some(ban)) => {
             let created_by = resolve_user_name(db, &ban.banning_admin).await;
@@ -227,6 +261,67 @@ async fn execute_info_cmd(id: i32, db: &PgDatabase) -> CreateInteractionResponse
             return create_response_with_content("Error happened retrieving ban.")
         }
     }
+}
+
+async fn execute_pardon_cmd(cmd: BansSubcommand, db: &PgDatabase, config: &Config) -> CreateInteractionResponse {
+    let (caller, id) = match cmd {
+        BansSubcommand::Pardon {caller_discord_id, id} => (caller_discord_id.to_string(), id),
+        _ => panic!("Invalid subcommand passed")
+    };
+
+    let auth_client = DiscordAuthClient::new(config.auth_url(), config.auth_token());
+    if let Err(e) = auth_client {
+        error!("Error creating auth client: {e}");
+        return create_response_with_content("Unable to setup authorization client.");
+    }
+    let auth_client = auth_client.unwrap();
+    
+    let admin_uuid = auth_client.get_uuid_by_discord_id(&caller).await;
+    let admin_uuid = match admin_uuid {
+        Ok(Some(uuid)) => uuid.uuid,
+        Ok(None) => return create_response_with_content("You're probably unauthorized to perform this action."),
+        Err(e) => {
+            error!("Error occured during fetching uuid by discord_id: {}", e);
+            return create_response_with_content("Error happened in auth client.")
+        }
+    };
+
+    let admin_name = match db.get_login_by_uuid(uuid::Uuid::from_str(&admin_uuid).unwrap()).await {
+        Ok(Some(login)) => login,
+        Ok(None) => return create_response_with_content("Unable to fetch admin name."),
+        Err(err) => {
+            warn!("Failed to fetch user name for {}: {}", admin_uuid, err);
+            return create_response_with_content("Unable to fetch admin name.")
+        }
+    };
+
+    let ss14_client = SS14ApiClient::new(config.api_url(), config.server_token());
+    if let Err(e) = ss14_client {
+        error!("Error creating ss14 client: {e}");
+        return create_response_with_content("Unable to setup ss14 client.");
+    }
+    let ss14_client = ss14_client.unwrap();
+
+    let actor = SS14Actor::new(uuid::Uuid::from_str(&admin_uuid).unwrap(), &admin_name);
+    let ban_cmd = PardonCommand::new(id);
+
+    let result = ss14_client.post_pardon(ban_cmd, actor).await;
+
+    match result {
+        Ok(_) => create_response_with_content(&format!("Successfully pardoned ban with id: {}", id)),
+        Err(e) => {
+            error!("Unable to pardon ban. Id: {id}. Error: {e}");
+            create_response_with_content("Error occured during ban pardon.")
+        }
+    }
+}
+
+async fn execute_ban_cmd(cmd: BansSubcommand) -> CreateInteractionResponse {
+    if !matches!(cmd, BansSubcommand::Ban {..}) {
+        panic!("Invalid bans subcommand passed!")
+    }
+
+    todo!()
 }
 
 fn format_short_ban_summary(ban: &ServerBanShort) -> String {
@@ -295,15 +390,18 @@ fn format_ban_summary(ban: &ServerBan, created_by: &str, last_edited_by: Option<
     formatted
 }
 
-pub enum BanSubcommand {
-    List {login: String},
-    Pardon {id: i32},
-    Info {id: i32},
+pub enum BansSubcommand {
+    List(String),
+    Info(i32),
+    Pardon {
+        caller_discord_id: UserId,
+        id: i64
+    },
     Ban {
-        admin_user_id: Uuid,
-        player_user_id: Uuid,
+        caller_discord_id: UserId,
+        banning_player_login: String,
+        minutes: i64,
         reason: String,
-        severity: u8,
-        minutes: u64,
+        severity: u16,
     }
 }

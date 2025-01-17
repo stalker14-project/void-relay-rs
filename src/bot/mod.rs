@@ -33,7 +33,7 @@ impl EventHandler for DiscordBot {
         let result = Self::register_commands(&ctx.http, self.config.guild(), vec![
             whitelist::get_registration(),
             notes::get_registration(),
-            ban::get_registration()
+            ban::get_registration(),
         ]).await;
 
         if let Err(e) = result {
@@ -92,11 +92,11 @@ impl DiscordBot {
                     Ok(options) => notes::execute(options, &self.db).await,
                     Err(e) => create_response_with_content(&e)
                 }
-            },
+            }
             DiscordCommandType::Ban => {
-                let result = ban::get_options(&command.data.options());
+                let result = ban::get_options(&command.data.options(), &command);
                 match result {
-                    Ok(options) => ban::execute(options, &self.db).await,
+                    Ok(options) => ban::execute(options, &self.db, &self.config).await,
                     Err(e) => create_response_with_content(&e)
                 }
             }

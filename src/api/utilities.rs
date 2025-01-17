@@ -4,7 +4,7 @@ use log::error;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 
-use crate::{bot::commands::ban::BanSubcommand, error::Error};
+use crate::error::Error;
 
 static TIMEOUT: Duration = Duration::from_secs(1);
 static USER_AGENT: &str = "VoidRelay Discord Bot";
@@ -87,10 +87,11 @@ impl SS14ApiClient {
         })
     }
 
-    pub async fn post_ban(&self, cmd: BanSubcommand) -> Result<(), Error> {
+    pub async fn post_ban(&self, cmd: BanCommand, actor: SS14Actor) -> Result<(), Error> {
         let request = self.inner.request(Method::POST, format!("{}/actions/ban", self.api_url))
             .bearer_auth(self.auth_token.to_owned())
-            .body(serde_json::to_string(&BanCommand::from(cmd)).unwrap())
+            .body(serde_json::to_string(&cmd).unwrap())
+            .header("Actor", serde_json::to_string(&actor).unwrap())
             .build()?;
 
         let response = self.inner.execute(request).await?;
@@ -102,10 +103,11 @@ impl SS14ApiClient {
         }
     }
 
-    pub async fn post_pardon(&self, cmd: BanSubcommand) -> Result<(), Error> {
+    pub async fn post_pardon(&self, cmd: PardonCommand, actor: SS14Actor) -> Result<(), Error> {
         let request = self.inner.request(Method::POST, format!("{}/actions/pardon", self.api_url))
             .bearer_auth(self.auth_token.to_owned())
-            .body(serde_json::to_string(&PardonCommand::from(cmd)).unwrap())
+            .body(serde_json::to_string(&cmd).unwrap())
+            .header("Actor", serde_json::to_string(&actor).unwrap())
             .build()?;
 
         let response = self.inner.execute(request).await?;
@@ -127,28 +129,18 @@ pub struct BanCommand {
     #[serde(rename = "playerGuid")]
     player_guid: String,
     reason: String,
-    severity: u8,
-    minutes: u64,
+    severity: u16,
+    minutes: i64,
 }
 
-impl From<BanSubcommand> for BanCommand {
-    fn from(value: BanSubcommand) -> Self {
-        if let BanSubcommand::Ban { 
-            admin_user_id, 
-            player_user_id, 
-            reason, 
-            severity, 
-            minutes 
-        } = value {
-            BanCommand {
-                admin_guid: admin_user_id.to_string(),
-                player_guid: player_user_id.to_string(),
-                reason,
-                severity,
-                minutes
-            }
-        } else {
-            panic!("Not a ban command passed.")
+impl BanCommand {
+    pub fn new(admin_guid: String, player_guid: String, reason: String, severity: u16, minutes: i64) -> Self {
+        Self {
+            admin_guid,
+            player_guid,
+            reason,
+            severity,
+            minutes
         }
     }
 }
@@ -156,15 +148,28 @@ impl From<BanSubcommand> for BanCommand {
 #[derive(Debug, Serialize)]
 pub struct PardonCommand {
     #[serde(rename = "banId")]
-    ban_id: i32,
+    ban_id: i64,
 }
 
-impl From<BanSubcommand> for PardonCommand {
-    fn from(value: BanSubcommand) -> Self {
-        if let BanSubcommand::Pardon { id } = value {
-            PardonCommand { ban_id: id}
-        } else {
-            panic!("Invalid ban subcommand passed.")
+impl PardonCommand {
+    pub fn new(id: i64) -> Self {
+        Self {
+            ban_id: id
+        }
+    }
+}
+
+#[derive(Serialize, Debug)]
+pub struct SS14Actor {
+    pub guid: String,
+    pub name: String,
+}
+
+impl SS14Actor {
+    pub fn new(guid: uuid::Uuid, name: &str) -> Self {
+        Self {
+            guid: guid.to_string(),
+            name: name.to_string()
         }
     }
 }

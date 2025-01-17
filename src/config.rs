@@ -11,6 +11,7 @@ pub struct Config {
     ss14_server_token: String,
     ss14_api_url: String,
     authorization_url: String,
+    authorization_token: String,
 }
 
 impl Config {
@@ -32,6 +33,10 @@ impl Config {
 
     pub fn auth_url(&self) -> &str {
         &self.authorization_url
+    }
+
+    pub fn auth_token(&self) -> &str {
+        &self.authorization_token
     }
 
     pub fn server_token(&self) -> &str {

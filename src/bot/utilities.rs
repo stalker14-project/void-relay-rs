@@ -9,8 +9,6 @@ use uuid::Uuid;
 
 use crate::{database::PgDatabase, error::Error};
 
-use super::commands::ban::BanSubcommand;
-
 #[derive(Debug, Deserialize)]
 pub struct AuthServerResponse { 
     #[serde(rename = "userId")] 
