@@ -1,6 +1,5 @@
 use log::error;
-use serenity::all::{CommandOptionType, CreateCommand, CreateCommandOption, CreateInteractionResponse, ResolvedOption, ResolvedValue};
-use uuid::Uuid;
+use serenity::all::{CommandOptionType, CreateCommand, CreateCommandOption, CreateInteractionResponseFollowup, ResolvedOption, ResolvedValue};
 
 use crate::{bot::{create_response_with_content, utilities::get_user_id_by_login}, database::PgDatabase, error::Error};
 
@@ -48,55 +47,55 @@ pub fn get_options(options: &Vec<ResolvedOption>) -> Result<WhitelistSubCommand,
     match subcommand.name {
         "add" => parse_add_options(subcommand),
         "rm" => parse_rm_options(subcommand),
-        _ => return Err("Invalid subcommand.".to_string())
+        _ => Err("Invalid subcommand.".to_string())
     }
 }
 
-pub async fn execute(cmd: WhitelistSubCommand, database: &PgDatabase) -> CreateInteractionResponse {
+pub async fn execute(cmd: WhitelistSubCommand, database: &PgDatabase) -> CreateInteractionResponseFollowup {
     match cmd {
         WhitelistSubCommand::Add { login } => execute_add_cmd(login, database).await,
         WhitelistSubCommand::Rm { login } => execute_rm_cmd(login, database).await,
     }
 }
 
-async fn execute_rm_cmd(login: String, db: &PgDatabase) -> CreateInteractionResponse {
+async fn execute_rm_cmd(login: String, db: &PgDatabase) -> CreateInteractionResponseFollowup {
     let uuid = match get_user_id_by_login(&login, db).await {
         Some(id) => id,
-        None => return create_response_with_content("No such player found."),
+        None => return create_response_with_content("No such player found.", true),
     };
 
-    match db.whitelistrm(uuid).await {
+    match db.whitelistrm(&uuid).await {
         Ok(rows) => {
             if rows == 0 {
-                create_response_with_content(&format!("User {} is not whitelisted.", login))
+                create_response_with_content(&format!("User {} is not whitelisted.", login), true)
             } else {
-                create_response_with_content(&format!("Successfully removed {} from whitelist.", login))
+                create_response_with_content(&format!("Successfully removed {} from whitelist.", login), true)
             }
         }
         Err(e) => {
             error!("Error removing player from whitelist: {}", e);
-            create_response_with_content(&format!("Unable to remove {} from whitelist.", login))
+            create_response_with_content(&format!("Unable to remove {} from whitelist.", login), true)
         }
     }
 }
 
-async fn execute_add_cmd(login: String, db: &PgDatabase) -> CreateInteractionResponse {
+async fn execute_add_cmd(login: String, db: &PgDatabase) -> CreateInteractionResponseFollowup {
     let uuid = match get_user_id_by_login(&login, db).await {
         Some(id) => id,
-        None => return create_response_with_content("No such player found."),
+        None => return create_response_with_content("No such player found.", true),
     };
 
-    match db.whitelistadd(uuid).await {
-        Ok(_) => create_response_with_content(&format!("Successfully added {} to whitelist.", login)),
+    match db.whitelistadd(&uuid).await {
+        Ok(_) => create_response_with_content(&format!("Successfully added {} to whitelist.", login), true),
         Err(e) => {
             if let Error::SqlxError(sqlx_err) = e {
                 if let Some(db_err) = sqlx_err.into_database_error() {
                     if db_err.is_unique_violation() {
-                        return create_response_with_content("Such player is already whitelisted.");
+                        return create_response_with_content("Such player is already whitelisted.", true);
                     }
                 }
             }
-            create_response_with_content(&format!("Unable to add {} to whitelist.", login))
+            create_response_with_content(&format!("Unable to add {} to whitelist.", login), true)
         }
     }
 }

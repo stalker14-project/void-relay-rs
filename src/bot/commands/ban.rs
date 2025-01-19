@@ -1,9 +1,7 @@
-use std::str::FromStr;
-
 use log::{error, warn};
-use serenity::all::{CommandInteraction, CommandOptionType, CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage, ResolvedOption, ResolvedValue, UserId};
+use serenity::all::{CommandInteraction, CommandOptionType, CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponseFollowup, ResolvedOption, ResolvedValue, UserId};
 
-use crate::{api::utilities::{BanCommand, DiscordAuthClient, PardonCommand, SS14Actor, SS14ApiClient}, bot::{create_response_with_content, utilities::{generate_random_colour, get_user_id_by_login, resolve_user_name}}, config::Config, database::{PgDatabase, ServerBan, ServerBanShort}};
+use crate::{api::{discord_client::DiscordApiClient, ss14client::{BanRequest, PardonRequest, SS14ApiActor, SS14ApiClient}}, bot::{create_response_with_content, utilities::{generate_random_colour, get_user_id_by_login, resolve_user_name}}, config::Config, database::{PgDatabase, ServerBan, ServerBanShort}, error::Error};
 
 static SHORT_MSG_LEN_SYMBOLS: usize = 50;
 
@@ -75,7 +73,7 @@ pub fn get_registration() -> CreateCommand {
                     "minutes",
                     "Minutes to ban player for",
                 )
-                .required(true),
+                .required(false),
             )
             .add_sub_option(
                 CreateCommandOption::new(
@@ -83,7 +81,7 @@ pub fn get_registration() -> CreateCommand {
                     "reason",
                     "Reason to ban for",
                 )
-                .required(true),
+                .required(false),
             )
             .add_sub_option(
                 CreateCommandOption::new(
@@ -91,7 +89,7 @@ pub fn get_registration() -> CreateCommand {
                     "severity",
                     "Severity to ban for",
                 )
-                .required(true),
+                .required(false),
             ),
         )
 }
@@ -134,7 +132,7 @@ fn parse_pardon_options(opt: &ResolvedOption, cmd: &CommandInteraction) -> Resul
 }
 
 fn parse_ban_options(opt: &ResolvedOption, cmd: &CommandInteraction) -> Result<BansSubcommand, String> {
-    let caller_discord_id = cmd.user.id.clone();
+    let caller_discord_id = cmd.user.id;
 
     if let ResolvedValue::SubCommand(suboptions) = &opt.value {
         let mut banning_player_login: Option<String> = None;
@@ -157,9 +155,9 @@ fn parse_ban_options(opt: &ResolvedOption, cmd: &CommandInteraction) -> Result<B
         }
 
         let banning_player_login = banning_player_login.unwrap();
-        let minutes = minutes.unwrap_or_else(|| 0);
-        let reason = reason.unwrap_or_else(|| "No reason provided".to_string());
-        let severity = severity.unwrap_or_else(|| 2);
+        let minutes = minutes.unwrap_or(0);
+        let reason = reason.unwrap_or("No reason provided".to_string());
+        let severity = severity.unwrap_or(2);
 
         return Ok(BansSubcommand::Ban { 
             caller_discord_id,
@@ -184,20 +182,20 @@ pub fn get_options(_options: &[ResolvedOption], cmd: &CommandInteraction) -> Res
         "info" => parse_info_options(subcommand),
         "pardon" => parse_pardon_options(subcommand, cmd),
         "ban" => parse_ban_options(subcommand, cmd),
-        _ => return Err("Invalid subcommand".to_string())
+        _ => Err("Invalid subcommand".to_string())
     }
 }
 
-pub async fn execute(cmd: BansSubcommand, db: &PgDatabase, config: &Config) -> CreateInteractionResponse {
+pub async fn execute(cmd: BansSubcommand, db: &PgDatabase, config: &Config) -> CreateInteractionResponseFollowup {
     match cmd {
-        BansSubcommand::Ban { .. } => execute_ban_cmd(cmd).await,
+        BansSubcommand::Ban { .. } => execute_ban_cmd(cmd, db, config).await,
         BansSubcommand::List(_) => execute_list_cmd(cmd, db).await,
         BansSubcommand::Pardon { .. } => execute_pardon_cmd(cmd, db, config).await,
         BansSubcommand::Info(_) => execute_info_cmd(cmd, db).await,
     }
 }
 
-async fn execute_list_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInteractionResponse {
+async fn execute_list_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInteractionResponseFollowup {
     let login = match cmd {
         BansSubcommand::List(login) => login,
         _ => panic!("Invalid subcommand passed.")
@@ -205,14 +203,14 @@ async fn execute_list_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInterac
 
     let uuid = match get_user_id_by_login(&login, db).await {
         Some(id) => id,
-        None => return create_response_with_content("No such player found."),
+        None => return create_response_with_content("No such player found.", true),
     };
 
-    match db.get_bans_list(uuid).await {
+    match db.get_bans_list(&uuid).await {
         Ok(bans) => {
             let description = bans
                 .iter()
-                .map(|ban| format_short_ban_summary(ban))
+                .map(format_short_ban_summary)
                 .collect::<Vec<String>>()
                 .join("\n");
 
@@ -222,16 +220,16 @@ async fn execute_list_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInterac
                 .color(generate_random_colour())
                 .footer(CreateEmbedFooter::new("VoidRelay By JerryImMouse"));
             
-            CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().add_embed(embed).ephemeral(true))
+                CreateInteractionResponseFollowup::new().add_embed(embed).ephemeral(true)
         },
         Err(e) => {
             error!("Error retrieving bans for {}. Error {}", login, e);
-            create_response_with_content("Failed to retrieve bans.")
+            create_response_with_content("Failed to retrieve bans.", true)
         }
     }
 }
 
-async fn execute_info_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInteractionResponse {
+async fn execute_info_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInteractionResponseFollowup {
     let id = match cmd {
         BansSubcommand::Info(id) => id,
         _ => panic!("Invalid subcommand passed.")
@@ -251,77 +249,129 @@ async fn execute_info_cmd(cmd: BansSubcommand, db: &PgDatabase) -> CreateInterac
                 .colour(generate_random_colour())
                 .footer(CreateEmbedFooter::new("VoidRelay By JerryImMouse"));
 
-            CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().add_embed(embed).ephemeral(true))
+            CreateInteractionResponseFollowup::new().add_embed(embed).ephemeral(true)
         },
         Ok(None) => {
-            return create_response_with_content(&format!("Ban with id: {} is not found", id))
+            create_response_with_content(&format!("Ban with id: {} is not found", id), true)
         }
         Err(e) => {
             error!("Error retrieving ban by id: {}. Error: {}", id, e);
-            return create_response_with_content("Error happened retrieving ban.")
+            create_response_with_content("Error happened retrieving ban.", true)
         }
     }
 }
 
-async fn execute_pardon_cmd(cmd: BansSubcommand, db: &PgDatabase, config: &Config) -> CreateInteractionResponse {
+async fn execute_pardon_cmd(cmd: BansSubcommand, db: &PgDatabase, config: &Config) -> CreateInteractionResponseFollowup {
     let (caller, id) = match cmd {
         BansSubcommand::Pardon {caller_discord_id, id} => (caller_discord_id.to_string(), id),
         _ => panic!("Invalid subcommand passed")
     };
 
-    let auth_client = DiscordAuthClient::new(config.auth_url(), config.auth_token());
+    let auth_client = DiscordApiClient::new(config.auth_url(), config.auth_token());
+    let auth_client = auth_client;
     if let Err(e) = auth_client {
         error!("Error creating auth client: {e}");
-        return create_response_with_content("Unable to setup authorization client.");
+        return create_response_with_content("Unable to setup authorization client.", true);
     }
     let auth_client = auth_client.unwrap();
     
-    let admin_uuid = auth_client.get_uuid_by_discord_id(&caller).await;
+    let admin_uuid = auth_client.uuid(&caller).await;
     let admin_uuid = match admin_uuid {
-        Ok(Some(uuid)) => uuid.uuid,
-        Ok(None) => return create_response_with_content("You're probably unauthorized to perform this action."),
-        Err(e) => {
-            error!("Error occured during fetching uuid by discord_id: {}", e);
-            return create_response_with_content("Error happened in auth client.")
-        }
+        Some(uuid) => uuid,
+        None => return create_response_with_content("You're probably unauthorized to perform this action.", true),
     };
 
-    let admin_name = match db.get_login_by_uuid(uuid::Uuid::from_str(&admin_uuid).unwrap()).await {
+    let admin_name = match db.get_login_by_uuid(&admin_uuid).await {
         Ok(Some(login)) => login,
-        Ok(None) => return create_response_with_content("Unable to fetch admin name."),
+        Ok(None) => return create_response_with_content("Unable to fetch admin name.", true),
         Err(err) => {
             warn!("Failed to fetch user name for {}: {}", admin_uuid, err);
-            return create_response_with_content("Unable to fetch admin name.")
+            return create_response_with_content("Unable to fetch admin name.", true)
         }
     };
 
     let ss14_client = SS14ApiClient::new(config.api_url(), config.server_token());
     if let Err(e) = ss14_client {
         error!("Error creating ss14 client: {e}");
-        return create_response_with_content("Unable to setup ss14 client.");
+        return create_response_with_content("Unable to setup ss14 client.", true);
     }
     let ss14_client = ss14_client.unwrap();
 
-    let actor = SS14Actor::new(uuid::Uuid::from_str(&admin_uuid).unwrap(), &admin_name);
-    let ban_cmd = PardonCommand::new(id);
+    let actor = SS14ApiActor::from((admin_uuid.to_string().as_str(), admin_name.as_str()));
+    let pardon_cmd = PardonRequest::new(id as i32, actor);
 
-    let result = ss14_client.post_pardon(ban_cmd, actor).await;
+    let result = ss14_client.pardon(pardon_cmd).await;
 
     match result {
-        Ok(_) => create_response_with_content(&format!("Successfully pardoned ban with id: {}", id)),
+        Ok(_) => create_response_with_content(&format!("Successfully pardoned ban with id: {}", id), true),
         Err(e) => {
             error!("Unable to pardon ban. Id: {id}. Error: {e}");
-            create_response_with_content("Error occured during ban pardon.")
+            if let Error::SS14ApiError(e) = e {
+                create_response_with_content(&format!("Error during pardon: {}", e), true)
+            } else {
+                create_response_with_content("Error occured during ban pardon.", true)
+            }
         }
     }
 }
 
-async fn execute_ban_cmd(cmd: BansSubcommand) -> CreateInteractionResponse {
-    if !matches!(cmd, BansSubcommand::Ban {..}) {
-        panic!("Invalid bans subcommand passed!")
-    }
+async fn execute_ban_cmd(cmd: BansSubcommand, db: &PgDatabase, config: &Config) -> CreateInteractionResponseFollowup {
+    let (caller, player_login, minutes, reason, severity) = match cmd {
+        BansSubcommand::Ban {
+            caller_discord_id,
+            banning_player_login,
+            minutes,
+            reason,
+            severity
+        } => (caller_discord_id, banning_player_login, minutes, reason, severity),
+        _ => panic!("Invalid subcommand passed")
+    };
 
-    todo!()
+    let clients = prepare_clients(config);
+    if let Err(e) = clients {
+        return create_response_with_content(&e, true);
+    }
+    let (ss14_api, discord_api) = clients.unwrap();
+
+    let admin_uuid = discord_api.uuid(&caller.get().to_string()).await;
+    let admin_uuid = match admin_uuid {
+        Some(uuid) => uuid,
+        None => return create_response_with_content("You're probably unauthorized to perform this action.", true),
+    };
+
+    let admin_name = match db.get_login_by_uuid(&admin_uuid).await {
+        Ok(Some(login)) => login,
+        Ok(None) => return create_response_with_content("Unable to fetch admin name.", true),
+        Err(err) => {
+            warn!("Failed to fetch user name for {}: {}", admin_uuid, err);
+            return create_response_with_content("Unable to fetch admin name.", true)
+        }
+    };
+
+    let banning_uuid = match get_user_id_by_login(&player_login, db).await {
+        Some(uuid) => uuid,
+        None => {
+            error!("Unable to find uuid of user: {}", player_login);
+            return create_response_with_content("Unable to find banning player.", true);
+        }
+    };
+
+    let actor = SS14ApiActor::from((admin_uuid.to_string().as_str(), admin_name.as_str()));
+    let ban_cmd = BanRequest::new(player_login.to_owned(),banning_uuid, reason, minutes as i32, severity, actor);
+
+    let result = ss14_api.ban(ban_cmd).await;
+
+    match result {
+        Ok(_) => create_response_with_content(&format!("Successfully banned player: `{}`", player_login), true),
+        Err(e) => {
+            error!("Unable to ban player: {player_login}. Error: {e}");
+            if let Error::SS14ApiError(e) = e {
+                create_response_with_content(&format!("Error during ban: {}", e), true)
+            } else {
+                create_response_with_content("Error occured during ban.", true)
+            }
+        }
+    }
 }
 
 fn format_short_ban_summary(ban: &ServerBanShort) -> String {
@@ -348,24 +398,24 @@ fn format_ban_summary(ban: &ServerBan, created_by: &str, last_edited_by: Option<
 ✍️ **Banning Admin:** {}
 "#,
         ban.server_ban_id,
-        ban.ban_time.to_string(),
+        ban.ban_time,
         ban.address,
         created_by,
     );
 
     // Optional Fields
     if let Some(expiration_time) = ban.expiration_time {
-        formatted.push_str(&format!("⏳ **Expiration Time:** {}\n", expiration_time.to_string()));
+        formatted.push_str(&format!("⏳ **Expiration Time:** {}\n", expiration_time));
     } else {
         formatted.push_str("⏳ **Expiration Time:** Never\n");
     }
 
-    if ban.hwid.len() != 0 {
+    if !ban.hwid.is_empty() {
         formatted.push_str(&format!("  **HWID:** {}\n", String::from_utf8_lossy(&ban.hwid)));
     }
 
     if let Some(last_edited_at) = ban.last_edited_at {
-        formatted.push_str(&format!("🕒 **Last Edited At:** {}\n", last_edited_at.to_string()));
+        formatted.push_str(&format!("🕒 **Last Edited At:** {}\n", last_edited_at));
     }
 
     if let Some(last_edited_by) = last_edited_by {
@@ -376,18 +426,33 @@ fn format_ban_summary(ban: &ServerBan, created_by: &str, last_edited_by: Option<
         formatted.push_str(&format!("✨ **Round ID:** {}\n", round_id));
     }
 
-    formatted.push_str(&format!(
-        "{}",
-        if ban.auto_delete {
-            "🗑️ **Auto Delete:** Yes\n"
-        } else {
-            "🗑️ **Auto Delete:** No\n"
-        }
-    ));
+    formatted.push_str(if ban.auto_delete {
+        "**🗑️ Auto Delete:** Yes\n"
+    } else {
+        "**🗑️ AutoDelete:** No\n"
+    });
 
     formatted.push_str(&format!("\n📝 **Reason:**\n{}", ban.reason));
 
     formatted
+}
+
+fn prepare_clients(config: &Config) -> Result<(SS14ApiClient, DiscordApiClient), String> {
+    let auth_client = DiscordApiClient::new(config.auth_url(), config.auth_token());
+    if let Err(e) = auth_client {
+        error!("Error creating auth client: {e}");
+        return Err("Unable to setup authorization client.".to_string());
+    }
+    let auth_client = auth_client.unwrap();
+    
+    let ss14_client = SS14ApiClient::new(config.api_url(), config.server_token());
+    if let Err(e) = ss14_client {
+        error!("Error creating ss14 client: {e}");
+        return Err("Unable to setup ss14 client.".to_string());
+    }
+    let ss14_client = ss14_client.unwrap();
+
+    Ok((ss14_client, auth_client))
 }
 
 pub enum BansSubcommand {

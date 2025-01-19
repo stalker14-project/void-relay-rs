@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::api::ss14client::ErrorResponse;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("I/O Error: {0}")]
@@ -14,12 +16,20 @@ pub enum Error {
     ReqwestErr(#[from] reqwest::Error),
     #[error("UUID Parse Error: {0}")]
     UuidErr(#[from] uuid::Error),
-    #[error("HTTP Api Error: {0}")]
-    HTTPApiError(String)
+    #[error("SS14 Api Error: {0}")]
+    SS14ApiError(String),
+    #[error("TypeAuthD Api Error: {0}")]
+    TypeAuthDApiError(String),
+}
+
+impl From<ErrorResponse> for Error {
+    fn from(value: ErrorResponse) -> Self {
+        Self::SS14ApiError(value.to_string())
+    }
 }
 
 impl Error {
-    pub fn api_err(s: &str) -> Self {
-        Self::HTTPApiError(s.to_string())
+    pub fn ss14_api(err: &str) -> Self {
+        Self::SS14ApiError(err.to_string())
     }
 }

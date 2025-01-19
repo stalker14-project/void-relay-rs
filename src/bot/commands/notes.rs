@@ -1,8 +1,6 @@
-use log::{error, warn};
+use log::error;
 use serenity::all::{
-    CommandOptionType, CreateCommand, CreateCommandOption, CreateEmbed,
-    CreateEmbedFooter, CreateInteractionResponse, CreateInteractionResponseMessage,
-    ResolvedOption, ResolvedValue,
+    CommandOptionType, CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter, CreateInteractionResponseFollowup, ResolvedOption, ResolvedValue
 };
 
 use crate::{
@@ -72,24 +70,24 @@ fn parse_list_subcommand(opt: &ResolvedOption) -> Result<NotesSubcommand, String
     Err("Invalid or missing 'login' option".to_string())
 }
 
-pub async fn execute(command: NotesSubcommand, db: &PgDatabase) -> CreateInteractionResponse {
+pub async fn execute(command: NotesSubcommand, db: &PgDatabase) -> CreateInteractionResponseFollowup {
     match command {
         NotesSubcommand::Note { id } => execute_note_by_id(id as i32, db).await,
         NotesSubcommand::List { login } => execute_list_by_login(login, db).await,
     }
 }
 
-async fn execute_list_by_login(login: String, db: &PgDatabase) -> CreateInteractionResponse {
+async fn execute_list_by_login(login: String, db: &PgDatabase) -> CreateInteractionResponseFollowup {
     let uuid = match get_user_id_by_login(&login, db).await {
         Some(id) => id,
-        None => return create_response_with_content("No such player found."),
+        None => return create_response_with_content("No such player found.", true),
     };
 
-    match db.get_notes_list(uuid).await {
+    match db.get_notes_list(&uuid).await {
         Ok(notes) => {
             let description = notes
                 .iter()
-                .map(|note| format_short_note_summary(note))
+                .map(format_short_note_summary)
                 .collect::<Vec<String>>()
                 .join("\n");
 
@@ -99,16 +97,16 @@ async fn execute_list_by_login(login: String, db: &PgDatabase) -> CreateInteract
                 .color(generate_random_colour())
                 .footer(CreateEmbedFooter::new("VoidRelay by JerryImMouse"));
 
-            CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().add_embed(embed).ephemeral(true))
+            CreateInteractionResponseFollowup::new().add_embed(embed).ephemeral(true)
         }
         Err(err) => {
             error!("Error retrieving notes for {}: {}", login, err);
-            create_response_with_content("Failed to retrieve notes.")
+            create_response_with_content("Failed to retrieve notes.", true)
         }
     }
 }
 
-async fn execute_note_by_id(id: i32, db: &PgDatabase) -> CreateInteractionResponse {
+async fn execute_note_by_id(id: i32, db: &PgDatabase) -> CreateInteractionResponseFollowup {
     match db.get_note_by_id(id).await {
         Ok(Some(note)) => {
             let created_by = resolve_user_name(db, &note.created_by_id).await;
@@ -123,12 +121,12 @@ async fn execute_note_by_id(id: i32, db: &PgDatabase) -> CreateInteractionRespon
                 .color(generate_random_colour())
                 .footer(CreateEmbedFooter::new("VoidRelay by JerryImMouse"));
 
-            CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().add_embed(embed).ephemeral(true))
+            CreateInteractionResponseFollowup::new().add_embed(embed).ephemeral(true)
         }
-        Ok(None) => create_response_with_content(&format!("Note with ID `{}` not found.", id)),
+        Ok(None) => create_response_with_content(&format!("Note with ID `{}` not found.", id), true),
         Err(err) => {
             error!("Error fetching note with ID {}: {}", id, err);
-            create_response_with_content("Error occurred while fetching the note.")
+            create_response_with_content("Error occurred while fetching the note.", true)
         }
     }
 }
@@ -160,23 +158,24 @@ fn format_admin_note(note: &AdminNote, created_by: &str, last_edited_by: &str) -
 "#,
         note.round_id,
         created_by,
-        note.created_at.to_string(),
+        note.created_at,
         last_edited_by,
-        note.last_edited_at.to_string(),
+        note.last_edited_at,
         if note.deleted { "Yes" } else { "No" },
     );
 
     if let Some(deleted_at) = note.deleted_at {
-        formatted.push_str(&format!("🗓️ **Deleted At:** {}\n", deleted_at.to_string()));
+        formatted.push_str(&format!("🗓️ **Deleted At:** {}\n", deleted_at));
     }
 
-    formatted.push_str(&format!(
-        "{}",
-        if note.secret { "🔒 **Secret:** Yes\n" } else { "🔓 **Secret:** No\n" }
-    ));
+    formatted.push_str(if note.secret { 
+        "🔒 **Secret:** Yes\n" 
+    } else { 
+        "🔓 **Secret:** No\n" 
+    });
 
     if let Some(expiration_time) = note.expiration_time {
-        formatted.push_str(&format!("⏳ **Expiration Time:** {}\n", expiration_time.to_string()));
+        formatted.push_str(&format!("⏳ **Expiration Time:** {}\n", expiration_time));
     }
 
     formatted.push_str(&format!("\n📝 **Message:**\n{}", note.message));

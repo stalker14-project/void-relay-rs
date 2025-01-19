@@ -7,7 +7,7 @@ use log::{
     error
 };
 
-use serenity::{all::{CommandInteraction, Context, CreateInteractionResponse, CreateInteractionResponseMessage, EventHandler, GatewayIntents, GuildId, Http, Interaction, Ready}, async_trait, Client};
+use serenity::{all::{CommandInteraction, Context, CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EventHandler, GatewayIntents, GuildId, Http, Interaction, Ready}, async_trait, Client};
 
 use crate::{config::Config, database::PgDatabase, error::Error};
 
@@ -77,44 +77,50 @@ impl DiscordBot {
             return;
         }
 
+        if let Err(e) = command.create_response(&ctx.http, CreateInteractionResponse::Defer(
+            CreateInteractionResponseMessage::new().content("Your request is processing...").ephemeral(true)
+        )).await {
+            error!("Error creating defer response: {e}");
+            return;
+        }
+
         let command_type = command_type.unwrap();
         let response = match command_type {
             DiscordCommandType::Whitelist => {
                 let result = whitelist::get_options(&command.data.options());
                 match result {
                     Ok(options) => whitelist::execute(options, &self.db).await,
-                    Err(e) => create_response_with_content(&e)
+                    Err(e) => create_response_with_content(&e, true)
                 }
             },
             DiscordCommandType::Notes => {
                 let result = notes::get_options(&command.data.options());
                 match result {
                     Ok(options) => notes::execute(options, &self.db).await,
-                    Err(e) => create_response_with_content(&e)
+                    Err(e) => create_response_with_content(&e, true)
                 }
             }
             DiscordCommandType::Ban => {
                 let result = ban::get_options(&command.data.options(), &command);
                 match result {
                     Ok(options) => ban::execute(options, &self.db, &self.config).await,
-                    Err(e) => create_response_with_content(&e)
+                    Err(e) => create_response_with_content(&e, true)
                 }
             }
         };
 
-        if let Err(e) = command.create_response(&ctx.http, response).await {
+        if let Err(e) = command.create_followup(&ctx.http, response).await {
             error!("Error creating response: {e}");
         }
     }
 }
 
-fn create_response_with_content(s: &str) -> CreateInteractionResponse {
-    let msg = CreateInteractionResponseMessage::new().content(s);
-    CreateInteractionResponse::Message(msg)
+fn create_response_with_content(s: &str, eph: bool) -> CreateInteractionResponseFollowup {
+    CreateInteractionResponseFollowup::new().content(s).ephemeral(eph)
 }
 
 async fn create_response(s: &str, ctx: Context, command: CommandInteraction) {
-    let builder = create_response_with_content(s);
+    let builder = CreateInteractionResponse::Message(CreateInteractionResponseMessage::new().content(s).ephemeral(true));
     if let Err(e) = command.create_response(&ctx.http, builder).await {
         error!("Error creating response: {e}");
     }

@@ -31,7 +31,7 @@ impl PgDatabase {
         Ok(Some(uuid))
     }
 
-    pub async fn whitelistadd(&self, user_id: Uuid) -> Result<u64, Error> {
+    pub async fn whitelistadd(&self, user_id: &Uuid) -> Result<u64, Error> {
         let query = sqlx::query("INSERT INTO whitelist (user_id) VALUES ($1)");
         let query = query.bind(user_id);
         
@@ -39,7 +39,7 @@ impl PgDatabase {
         Ok(affected_rows)
     }
 
-    pub async fn whitelistrm(&self, user_id: Uuid) -> Result<u64, Error> {
+    pub async fn whitelistrm(&self, user_id: &Uuid) -> Result<u64, Error> {
         let query = sqlx::query("DELETE FROM whitelist WHERE user_id = $1");
         let query = query.bind(user_id);
 
@@ -47,7 +47,7 @@ impl PgDatabase {
         Ok(affected_rows)
     }
 
-    pub async fn get_login_by_uuid(&self, uuid: Uuid) -> Result<Option<String>, Error> {
+    pub async fn get_login_by_uuid(&self, uuid: &Uuid) -> Result<Option<String>, Error> {
         let query = sqlx::query("SELECT last_seen_user_name FROM player WHERE user_id = $1");
         let query = query.bind(uuid);
 
@@ -62,7 +62,7 @@ impl PgDatabase {
         Ok(Some(login))
     }
 
-    pub async fn get_notes_list(&self, uuid: Uuid) -> Result<Vec<AdminNoteShort>, Error> {
+    pub async fn get_notes_list(&self, uuid: &Uuid) -> Result<Vec<AdminNoteShort>, Error> {
         let notes = sqlx::query_as::<_, AdminNoteShort>("SELECT admin_notes_id, message FROM admin_notes WHERE player_user_id = $1")
             .bind(uuid)
             .fetch_all(&self.inner_pool).await?;
@@ -70,7 +70,7 @@ impl PgDatabase {
         Ok(notes)
     }
 
-    pub async fn get_bans_list(&self, uuid: Uuid) -> Result<Vec<ServerBanShort>, Error> {
+    pub async fn get_bans_list(&self, uuid: &Uuid) -> Result<Vec<ServerBanShort>, Error> {
         let bans = sqlx::query_as::<_, ServerBanShort>(
             "SELECT server_ban_id, reason FROM server_ban WHERE player_user_id = $1"
         ).bind(uuid)
